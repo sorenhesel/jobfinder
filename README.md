@@ -13,11 +13,13 @@ Du kan senere starte det med `bash start_mac.command` fra samme mappe. Første o
 
 ## Hvad appen kan
 
-- Hente danske jobopslag fra Jobnet direkte til appen. Åbn **Find nye job**, tilpas eventuelt søgeordene, og klik **Find nye job**. Appen henter op til 25 opslag pr. søgeord for op til fem søgeord og gemmer titel, virksomhed, arbejdssted, jobtekst og direkte link.
+- Hente jobopslag fra Jobnet og Jobindex direkte til appen. Angiv fælles søgeord under **Din søgeprofil**, og klik **Find nye job**. Appen bruger op til fem søgeudtryk og henter op til 25 opslag pr. udtryk fra hver portal. Jobindex leverer den opslagstekst, der er tilgængelig i feedet.
 - Hente internationale job fra Arbeitnow og Remotive, hvis du vælger dem.
 - Læse RSS-feeds, som du selv tilføjer.
 - Gemme jobopslag via URL eller ved at indsætte jobtekst.
 - Beregne en vejledende score ud fra fire karrierespor.
+- Sammenligne hele den tilgængelige jobtekst med dine erfaringer og karriereønsker. Gem én kompetence eller ét ønske pr. linje under **Din søgeprofil**, og vælg **Analysér opslag** i Joboversigt. Du kan hente eller indsætte den fulde tekst, hvis kilden kun leverer et uddrag.
+- Knytte et ChatGPT-samtalelink og uddrag til et job under **Ansøgningssamtale**. Uddrag, du indsætter, sammenlignes med jobteksten under **Analysér opslag**. Link og uddrag gemmes lokalt.
 - Markere job som interessante, ansøgte eller afviste og gemme noter.
 - Undgå dubletter på basis af URL; eksportere historik til CSV.
 

@@ -41,10 +41,16 @@ def make_id(url, title, company):
 
 
 def save_job(db, job):
-    job['id'] = make_id(job.get('url'), job.get('title', ''), job.get('company', ''))
+    job['id'] = make_id(job.get('identity_url') or job.get('url'), job.get('title', ''), job.get('company', ''))
     db.execute('''INSERT OR IGNORE INTO jobs (id,title,company,location,url,description,source,published,added) VALUES (?,?,?,?,?,?,?,?,?)''', (
         job['id'], job.get('title',''), job.get('company',''), job.get('location',''), job.get('url',''), job.get('description',''), job.get('source',''), job.get('published',''), datetime.now(timezone.utc).isoformat()))
-    return db.execute('SELECT changes()').fetchone()[0]
+    inserted = db.execute('SELECT changes()').fetchone()[0]
+    if not inserted and job.get('identity_url') and job['url'] != job['identity_url']:
+        db.execute(
+            "UPDATE jobs SET url = ? WHERE id = ? AND source = 'Jobnet' AND url <> ?",
+            (job['url'], job['id'], job['url']),
+        )
+    return inserted
 
 
 def fetch_jobnet(query):
@@ -80,11 +86,16 @@ def fetch_jobnet(query):
             district or (ad.get('municipality') or '').strip(),
             'Danmark',
         ]
+        jobnet_url = f'https://jobnet.dk/find-job/{ad_id}'
+        external_url = (ad.get('jobAdUrl') or '').strip()
+        parsed_url = urlparse(external_url)
+        use_external = ad.get('isExternal') and parsed_url.scheme in {'http', 'https'} and parsed_url.hostname
         yield {
             'title': (ad.get('title') or '').strip(),
             'company': ad.get('hiringOrgName') or '',
             'location': ', '.join(place for place in places if place),
-            'url': f'https://jobnet.dk/find-job/{ad_id}',
+            'url': external_url if use_external else jobnet_url,
+            'identity_url': jobnet_url,
             'description': clean_html(ad.get('description')),
             'source': 'Jobnet',
             'published': ad.get('publicationDate') or '',
@@ -96,6 +107,40 @@ def fetch_arbeitnow():
     r.raise_for_status()
     for item in r.json().get('data', []):
         yield {'title':item.get('title',''), 'company':item.get('company_name',''), 'location':item.get('location',''), 'url':item.get('url',''), 'description':clean_html(item.get('description','')), 'source':'Arbeitnow', 'published':str(item.get('created_at',''))}
+
+
+def fetch_jobindex(query):
+    response = requests.get(
+        'https://www.jobindex.dk/jobsoegning.rss',
+        params={'q': query},
+        headers=HEADERS,
+        timeout=15,
+    )
+    response.raise_for_status()
+    feed = feedparser.parse(response.content)
+    if feed.version != 'rss20' or (feed.bozo and not feed.entries):
+        raise ValueError('Jobindex returnerede et ugyldigt RSS-feed')
+    for item in feed.entries[:25]:
+        url = urlparse(item.get('link', ''))
+        if (url.scheme != 'https' or url.netloc != 'www.jobindex.dk'
+                or not re.fullmatch(r'/vis-job/[^/]+', url.path)):
+            continue
+        body = BeautifulSoup(item.get('summary', ''), 'html.parser')
+        heading = body.select_one('h4')
+        area = body.select_one('.jobad-element-area, .jix_robotjob--area')
+        title = heading.get_text(' ', strip=True) if heading else item.get('title', '')
+        company = item.get('author', '')
+        if not company and item.get('title', '').startswith(f'{title}, '):
+            company = item['title'][len(title) + 2:]
+        yield {
+            'title': title,
+            'company': company,
+            'location': area.get_text(' ', strip=True) if area else '',
+            'url': f'https://www.jobindex.dk{url.path}',
+            'description': body.get_text(' ', strip=True),
+            'source': 'Jobindex',
+            'published': item.get('published', ''),
+        }
 
 
 def fetch_remotive():
@@ -124,7 +169,30 @@ def fetch_page(url):
     soup = BeautifulSoup(r.text, 'html.parser')
     title = (soup.find('h1').get_text(' ',strip=True) if soup.find('h1') else (soup.title.get_text(' ',strip=True) if soup.title else url))
     for el in soup(['script','style','nav','footer','header']): el.decompose()
-    return {'title':title[:240], 'company':parsed.hostname, 'location':'', 'url':url, 'description':soup.get_text(' ',strip=True)[:40000], 'source':'Manuelt link', 'published':''}
+    content = soup.select_one('main article, main, article') or soup
+    return {'title':title[:240], 'company':parsed.hostname, 'location':'', 'url':url, 'description':content.get_text('\n',strip=True), 'source':'Manuelt link', 'published':''}
+
+
+def compare_profile(job, criteria):
+    """Find profile criteria and quote nearby text from the entire available posting."""
+    text = '\n'.join(job.get(field) or '' for field in ('title', 'location', 'description'))
+    text = re.sub(r'\s+', ' ', text).strip()
+    matched, unclear = [], []
+    seen = set()
+    for line in criteria.splitlines():
+        criterion = ' '.join(line.strip(' \t•-').split())
+        if not criterion or criterion.casefold() in seen:
+            continue
+        seen.add(criterion.casefold())
+        match = re.search(rf'(?<!\w){re.escape(criterion)}(?!\w)', text, re.IGNORECASE)
+        if match is None:
+            unclear.append(criterion)
+            continue
+        start = max(0, match.start() - 65)
+        end = min(len(text), match.end() + 100)
+        excerpt = ('…' if start else '') + text[start:end] + ('…' if end < len(text) else '')
+        matched.append((criterion, excerpt))
+    return matched, unclear
 
 
 def geography(location):
@@ -147,7 +215,7 @@ def geography(location):
 
 def score(job, weights):
     title = (job['title'] or '').lower()
-    body = (job['description'] or '').lower()[:25000]
+    body = (job['description'] or '').lower()
     text = title + ' ' + body
     hits = {}
     for track, terms in TRACKS.items():
