@@ -1,8 +1,10 @@
 import json
-from urllib.parse import quote_plus
 import pandas as pd
 import streamlit as st
-from job_engine import connect, TRACKS, fetch_arbeitnow, fetch_remotive, fetch_rss, fetch_page, save_job, score
+from job_engine import (
+    TRACKS, connect, fetch_arbeitnow, fetch_jobnet, fetch_page, fetch_remotive,
+    fetch_rss, save_job, score,
+)
 
 st.set_page_config(page_title='Min jobsøgemaskine', page_icon='🔎', layout='wide')
 st.title('🔎 Min jobsøgemaskine')
@@ -35,38 +37,47 @@ with st.sidebar:
 search_tab, results_tab, history_tab = st.tabs(['Find nye job','Joboversigt','Historik og eksport'])
 with search_tab:
     st.subheader('Søg i åbne jobkilder')
-    st.write('De indbyggede kilder er internationale og indeholder især remote-stillinger. Tilføj danske RSS-feeds eller konkrete joblinks nedenfor.')
+    st.write('Hent danske jobopslag fra Jobnet direkte til Joboversigt.')
+    jobnet_queries = st.text_input(
+        'Søgeord på Jobnet (adskilt med komma)',
+        value=setting('jobnet_queries', 'analytiker, finans, forretningsudvikler, data scientist, softwareudvikler'),
+        help='Appen søger på op til fem udtryk og henter op til 25 opslag pr. udtryk. Et tomt felt giver en bred søgning.',
+    )
     c1,c2 = st.columns(2)
     use_arbeit = c1.checkbox('Arbeitnow (international)',False)
     use_remotive = c2.checkbox('Remotive (international)',False)
-    st.subheader('Danske jobsøgninger')
-    st.caption('Åbner danske søgeresultater i browseren. Importér interessante opslag via linkfeltet nedenfor. Dette er endnu ikke automatisk import.')
-    searches = [
-        ('Odense · finans og analyse', 'site:jobindex.dk/jobannonce (analytiker OR forretningsudvikler OR finans) Odense'),
-        ('Middelfart · analyse og rådgivning', 'job analytiker rådgivning forretningsudvikling Middelfart'),
-        ('Aarhus · finans og data', 'job finans analytiker data Aarhus centrum banegården'),
-        ('København · finans og modeller', 'job quantitative analyst model validation financial analyst København hybrid'),
-    ]
-    for label, search in searches:
-        st.markdown(f'[{label}](https://www.google.com/search?q={quote_plus(search)}&tbs=qdr:m)')
     rss = st.text_area('RSS-feed-adresser (én pr. linje)',value='\n'.join(setting('rss',[])),placeholder='https://eksempel.dk/jobs.rss')
     if st.button('🔎 Find nye job',type='primary'):
         feeds = [x.strip() for x in rss.splitlines() if x.strip()]
         put_setting('rss',feeds)
-        sources = ([('Arbeitnow',fetch_arbeitnow)] if use_arbeit else []) + ([('Remotive',fetch_remotive)] if use_remotive else [])
+        put_setting('jobnet_queries', jobnet_queries)
+        queries = list(dict.fromkeys(q.strip() for q in jobnet_queries.split(',') if q.strip()))[:5]
+        sources = [(f'Jobnet ({q})' if q else 'Jobnet', lambda q=q: fetch_jobnet(q)) for q in queries or ['']]
+        if use_arbeit:
+            sources.append(('Arbeitnow', fetch_arbeitnow))
+        if use_remotive:
+            sources.append(('Remotive', fetch_remotive))
         sources += [(url,lambda u=url:fetch_rss(u)) for url in feeds]
         added=0; seen=0; errors=[]
         with st.spinner('Henter stillinger...'):
             for name,fn in sources:
                 try:
-                    for job in fn():
-                        if not job.get('title') or not job.get('url'): continue
-                        seen += 1
-                        added += save_job(db,job)
-                    db.commit()
+                    jobs = [job for job in fn() if job.get('title') and job.get('url')]
+                    with db:
+                        inserted = sum(save_job(db, job) for job in jobs)
+                    seen += len(jobs)
+                    added += inserted
                 except Exception as exc:
                     errors.append(f'{name}: {exc}')
-        st.success(f'Gennemgået {seen} opslag. {added} nye job gemt.')
+        report = f'Gennemgået {seen} opslag. {added} nye job gemt.'
+        if len(errors) == len(sources):
+            st.error('Ingen jobkilder kunne hentes.')
+        elif errors:
+            st.warning(report)
+        else:
+            st.success(report)
+        if seen:
+            st.caption('Se resultaterne under Joboversigt, eller se alle gemte opslag under Historik og eksport.')
         for error in errors: st.warning(error)
     st.divider()
     st.subheader('Tilføj et konkret jobopslag')

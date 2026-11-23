@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import UUID
 
 import feedparser
 import requests
@@ -44,6 +45,50 @@ def save_job(db, job):
     db.execute('''INSERT OR IGNORE INTO jobs (id,title,company,location,url,description,source,published,added) VALUES (?,?,?,?,?,?,?,?,?)''', (
         job['id'], job.get('title',''), job.get('company',''), job.get('location',''), job.get('url',''), job.get('description',''), job.get('source',''), job.get('published',''), datetime.now(timezone.utc).isoformat()))
     return db.execute('SELECT changes()').fetchone()[0]
+
+
+def fetch_jobnet(query):
+    response = requests.get(
+        'https://jobnet.dk/bff/FindJob/Search',
+        headers={**HEADERS, 'x-csrf': '1'},
+        params={
+            'searchString': query,
+            'countries': 'DK',
+            'resultsPerPage': 25,
+            'pageNumber': 1,
+            'orderType': 'BestMatch',
+            'kmRadius': 50,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    ads = response.json()['jobAds']
+    if not isinstance(ads, list):
+        raise ValueError('Jobnet returnerede et ukendt svarformat')
+    for ad in ads:
+        if (ad.get('country') or '').casefold() not in {'danmark', 'denmark', 'dk'}:
+            continue
+        try:
+            ad_id = UUID(ad.get('jobAdId') or '')
+        except ValueError:
+            continue
+        district = ' '.join(
+            str(part) for part in (ad.get('postalCode'), ad.get('postalDistrictName')) if part
+        )
+        places = [
+            (ad.get('workPlaceAddress') or '').strip(),
+            district or (ad.get('municipality') or '').strip(),
+            'Danmark',
+        ]
+        yield {
+            'title': (ad.get('title') or '').strip(),
+            'company': ad.get('hiringOrgName') or '',
+            'location': ', '.join(place for place in places if place),
+            'url': f'https://jobnet.dk/find-job/{ad_id}',
+            'description': clean_html(ad.get('description')),
+            'source': 'Jobnet',
+            'published': ad.get('publicationDate') or '',
+        }
 
 
 def fetch_arbeitnow():
